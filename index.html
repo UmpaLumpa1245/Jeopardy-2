@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Jeopardy Quiz lokal</title>
+  <title>Jeopardy Quiz public</title>
   <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
@@ -149,9 +149,17 @@
     <div class="flex items-center justify-between mb-6 gap-3">
       <button onclick="showView('menu')" class="text-[#f5c518] hover:text-white flex items-center gap-2"><i data-lucide="arrow-left"></i> Zurück</button>
       <h2 class="text-2xl font-bold text-[#f5c518] text-center">Quiz bearbeiten <span id="edit-board-label" class="text-yellow-200 text-lg">Board 1</span></h2>
-      <button onclick="saveAll()" id="save-btn" class="bg-[#f5c518] text-[#0a0e2a] font-bold py-2 px-5 rounded-lg flex items-center gap-2 hover:bg-[#ffda44] transition-all"><i data-lucide="save"></i> Speichern</button>
+      <div class="flex flex-wrap gap-2 justify-end">
+        <button type="button" onclick="saveAll()" id="save-btn" class="bg-[#f5c518] text-[#0a0e2a] font-bold py-2 px-4 rounded-lg flex items-center gap-2 hover:bg-[#ffda44] transition-all"><i data-lucide="save"></i> Lokal speichern</button>
+        <button type="button" onclick="publishQuizToGitHub()" id="publish-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-all">🌍 Veröffentlichen</button>
+        <button type="button" onclick="openGitHubTokenSetup()" id="token-btn" class="bg-purple-700 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-all">🔑 GitHub Token</button>
+        <button type="button" onclick="exportQuizJson()" id="export-btn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 transition-all">⬇️ Backup exportieren</button>
+        <label class="bg-[#0f1347] hover:bg-[#1a237e] text-white font-bold py-2 px-4 rounded-lg flex items-center gap-2 cursor-pointer transition-all">⬆️ Backup laden
+          <input type="file" accept="application/json,.json" class="hidden" onchange="importQuizJson(this)">
+        </label>
+      </div>
     </div>
-    <p class="text-center text-sm text-yellow-200 mb-4"></p>
+    <p class="text-center text-sm text-yellow-200 mb-4">Öffentlich machen: bearbeiten → <b>🌍 Veröffentlichen</b>. Beim ersten Mal musst du deinen GitHub Token eintragen.</p>
     <div id="edit-grid" class="grid grid-cols-1 md:grid-cols-5 gap-4"></div>
     <p id="save-msg" class="text-center mt-4 text-green-400 hidden">Gespeichert!</p>
 
@@ -242,6 +250,12 @@
 
 <script>
 const CATS = 5, QS = 5, POINTS = [100, 200, 300, 400, 500];
+const PUBLIC_QUIZ_FILE = 'quiz.json';
+const GITHUB_OWNER = 'UmpaLumpa1245';
+const GITHUB_REPO = 'Jeopardy-2';
+const GITHUB_BRANCH = 'main';
+const GITHUB_QUIZ_PATH = 'quiz.json';
+const GITHUB_TOKEN_KEY = 'jeopardy_github_token_v1';
 const STORAGE_KEY_BASE = 'jeopardy_quiz_board_v5';
 const TITLE_KEY_BASE = 'jeopardy_quiz_title_v5';
 const ACTIVE_BOARD_KEY = 'jeopardy_active_board_v1';
@@ -562,17 +576,212 @@ function emptyBoard() {
 function loadBoard() {
   try { allData = JSON.parse(localStorage.getItem(storageKey()) || '[]'); }
   catch { allData = []; }
-  // Übernahme alter Versionen: falls noch image_data im localStorage liegt, bleibt es als Fallback erhalten.
+}
+
+function cleanBoardForPublic(board) {
+  return (board || []).map(item => {
+    const clean = { ...item };
+    delete clean.image_data;
+    delete clean.answer_image_data;
+    delete clean.image_key;
+    delete clean.answer_image_key;
+    clean.image_url = (clean.image_url || '').trim();
+    clean.answer_image_url = (clean.answer_image_url || '').trim();
+    return clean;
+  });
 }
 
 function persistBoard(board) {
-  allData = board.map(item => {
-    const clean = { ...item };
-    delete clean.image_data; // lokale Bilder nicht mehr in localStorage speichern
-    delete clean.answer_image_data;
-    return clean;
-  });
+  allData = cleanBoardForPublic(board);
   localStorage.setItem(storageKey(), JSON.stringify(allData));
+}
+
+function collectQuizPackage() {
+  syncEditInputs();
+  persistBoard(localBoard);
+  const count = getBoardCount();
+  const boards = [];
+  for (let i = 1; i <= count; i++) {
+    let items = [];
+    try { items = JSON.parse(localStorage.getItem(storageKeyFor(i)) || '[]'); }
+    catch { items = []; }
+    boards.push({
+      id: String(i),
+      title: localStorage.getItem(titleKeyFor(i)) || 'Quizshow',
+      items: cleanBoardForPublic(items)
+    });
+  }
+  return {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    board_count: count,
+    active_board: String(currentBoardId || '1'),
+    boards
+  };
+}
+
+function applyQuizPackage(pkg) {
+  if (!pkg || !Array.isArray(pkg.boards)) return false;
+  const boards = pkg.boards;
+  setBoardCount(Math.max(1, Number(pkg.board_count) || boards.length || 1));
+  boards.forEach((board, index) => {
+    const id = String(board.id || index + 1);
+    localStorage.setItem(storageKeyFor(id), JSON.stringify(cleanBoardForPublic(board.items || [])));
+    if (board.title) localStorage.setItem(titleKeyFor(id), board.title);
+  });
+  currentBoardId = String(pkg.active_board || boards[0]?.id || '1');
+  localStorage.setItem(ACTIVE_BOARD_KEY, currentBoardId);
+  loadBoard();
+  localBoard = getBoard();
+  updateBoardLabels();
+  return true;
+}
+
+async function loadPublicQuizJson() {
+  try {
+    const res = await fetch(PUBLIC_QUIZ_FILE + '?v=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return false;
+    const pkg = await res.json();
+    return applyQuizPackage(pkg);
+  } catch (e) {
+    console.warn('quiz.json konnte nicht geladen werden:', e);
+    return false;
+  }
+}
+
+function exportQuizJson() {
+  const pkg = collectQuizPackage();
+  const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'quiz.json';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  const msg = document.getElementById('save-msg');
+  if (msg) {
+    msg.textContent = 'quiz.json wurde heruntergeladen. Lade diese Datei jetzt auf GitHub hoch.';
+    msg.className = 'text-center mt-4 text-green-400';
+  }
+}
+
+
+function setSaveMessage(text, ok = true) {
+  const msg = document.getElementById('save-msg');
+  if (!msg) return;
+  msg.textContent = text;
+  msg.className = `text-center mt-4 ${ok ? 'text-green-400' : 'text-red-300'}`;
+}
+
+function openGitHubTokenSetup() {
+  const old = localStorage.getItem(GITHUB_TOKEN_KEY) || '';
+  const token = prompt(
+    'GitHub Token einfügen. Er braucht nur Zugriff auf dieses Repository und die Berechtigung: Contents: Read and write.\n\nWichtig: Diesen Token nicht an andere weitergeben.',
+    old
+  );
+  if (token === null) return;
+  const clean = token.trim();
+  if (!clean) {
+    localStorage.removeItem(GITHUB_TOKEN_KEY);
+    setSaveMessage('GitHub Token wurde entfernt.', true);
+    return;
+  }
+  localStorage.setItem(GITHUB_TOKEN_KEY, clean);
+  setSaveMessage('GitHub Token wurde in diesem Browser gespeichert.', true);
+}
+
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  bytes.forEach(b => binary += String.fromCharCode(b));
+  return btoa(binary);
+}
+
+async function publishQuizToGitHub() {
+  const token = localStorage.getItem(GITHUB_TOKEN_KEY);
+  if (!token) {
+    openGitHubTokenSetup();
+    if (!localStorage.getItem(GITHUB_TOKEN_KEY)) return;
+  }
+
+  const btn = document.getElementById('publish-btn');
+  const oldText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Veröffentliche...'; }
+  setSaveMessage('Veröffentliche quiz.json auf GitHub...', true);
+
+  try {
+    const pkg = collectQuizPackage();
+    const json = JSON.stringify(pkg, null, 2);
+    const apiUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${encodeURIComponent(GITHUB_QUIZ_PATH)}`;
+
+    let sha = null;
+    const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(GITHUB_BRANCH)}`, {
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${localStorage.getItem(GITHUB_TOKEN_KEY)}`,
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
+    });
+    if (getRes.ok) {
+      const existing = await getRes.json();
+      sha = existing.sha || null;
+    } else if (getRes.status !== 404) {
+      const err = await getRes.json().catch(() => ({}));
+      throw new Error(err.message || `GitHub konnte quiz.json nicht lesen (${getRes.status}).`);
+    }
+
+    const putRes = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': `Bearer ${localStorage.getItem(GITHUB_TOKEN_KEY)}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: `Update quiz.json ${new Date().toLocaleString('de-DE')}`,
+        content: utf8ToBase64(json),
+        branch: GITHUB_BRANCH,
+        ...(sha ? { sha } : {})
+      })
+    });
+
+    if (!putRes.ok) {
+      const err = await putRes.json().catch(() => ({}));
+      throw new Error(err.message || `GitHub Veröffentlichung fehlgeschlagen (${putRes.status}).`);
+    }
+
+    setSaveMessage('Veröffentlicht! GitHub Pages braucht eventuell 1–2 Minuten, bis alle Besucher die Änderung sehen.', true);
+  } catch (e) {
+    console.error(e);
+    setSaveMessage('Fehler beim Veröffentlichen: ' + (e.message || e), false);
+    if (String(e.message || '').toLowerCase().includes('bad credentials') || String(e.message || '').toLowerCase().includes('401')) {
+      localStorage.removeItem(GITHUB_TOKEN_KEY);
+      alert('Der GitHub Token ist ungültig oder abgelaufen. Bitte erstelle einen neuen Token und trage ihn erneut ein.');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText || '🌍 Veröffentlichen'; }
+    if (window.lucide) lucide.createIcons();
+  }
+}
+
+function importQuizJson(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const pkg = JSON.parse(reader.result);
+      if (!applyQuizPackage(pkg)) throw new Error('Ungültige quiz.json');
+      renderBoardMenu();
+      renderEditView();
+      const msg = document.getElementById('save-msg');
+      if (msg) { msg.textContent = 'quiz.json wurde geladen.'; msg.className = 'text-center mt-4 text-green-400'; }
+    } catch (e) {
+      alert('Diese quiz.json konnte nicht geladen werden.');
+    } finally { input.value = ''; }
+  };
+  reader.readAsText(file);
 }
 
 function getBoard() {
@@ -887,7 +1096,7 @@ function saveAll() {
   } catch (e) {
     msg.textContent = 'Speichern fehlgeschlagen.'; msg.className = 'text-center mt-4 text-red-400';
   }
-  btn.disabled = false; btn.innerHTML = '<i data-lucide="save"></i> Speichern';
+  btn.disabled = false; btn.innerHTML = '<i data-lucide="save"></i> Lokal speichern';
   if (window.lucide) lucide.createIcons();
 }
 
@@ -1111,14 +1320,44 @@ document.getElementById('score-edit-input')?.addEventListener('keydown', (e) => 
 });
 
 
+
+
+// Sicherheitsnetz: Funktionen und Buttons explizit global verbinden.
+window.saveAll = saveAll;
+window.publishQuizToGitHub = publishQuizToGitHub;
+window.openGitHubTokenSetup = openGitHubTokenSetup;
+window.exportQuizJson = exportQuizJson;
+window.importQuizJson = importQuizJson;
+
+document.addEventListener('DOMContentLoaded', () => {
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      fn();
+    });
+  };
+  bind('save-btn', saveAll);
+  bind('publish-btn', publishQuizToGitHub);
+  bind('token-btn', openGitHubTokenSetup);
+  bind('export-btn', exportQuizJson);
+});
+
 window.addEventListener('resize', fitCategoryHeaders);
-loadBoard();
-renderBoardMenu();
-updateBoardLabels();
-applySavedTheme();
-renderTeamNameInputs();
-applyGlassEffect();
-if (window.lucide) lucide.createIcons();
+async function initApp() {
+  await loadPublicQuizJson();
+  loadBoard();
+  localBoard = getBoard();
+  renderBoardMenu();
+  updateBoardLabels();
+  applySavedTheme();
+  renderTeamNameInputs();
+  applyGlassEffect();
+  if (window.lucide) lucide.createIcons();
+}
+initApp();
 </script>
 
 </body>
